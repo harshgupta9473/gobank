@@ -159,13 +159,13 @@ func (s *APIServer) handleDeleteAccount(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *APIServer) handleTransfer(w http.ResponseWriter, r *http.Request) error {
-	transferReq := new(TransferRequest)
+	transferReq := new(TransactionRequest)
 	if err := json.NewDecoder(r.Body).Decode(transferReq); err != nil {
 		return err
 	}
 	defer r.Body.Close()
-
-	return WriteJSON(w, http.StatusOK, transferReq)
+	withJWTAuth()
+	s.store.TransferMoney(transferReq,)
 }
 
 func getID(r *http.Request) (int, error) {
