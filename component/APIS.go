@@ -302,9 +302,9 @@ func withJWTAuth(handlerFunc http.HandlerFunc, s Storage) http.HandlerFunc {
 		handlerFunc(w, r)
 	}
 }
-
+// error
 func validateJWT(tokenString string) (*jwt.Token, error) {
-	err := godotenv.Load()
+	err := godotenv.Load() // new addition
 	if err != nil {
 		return nil, err
 	}

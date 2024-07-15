@@ -27,7 +27,7 @@ type PostgressStore struct {
 }
 
 func NewPostgressStore() (*PostgressStore, error) {
-	err := godotenv.Load()
+	err := godotenv.Load() /// new addition
 	if err != nil {
 		return nil, err
 	}
