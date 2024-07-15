@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/gorilla/mux"
+	"github.com/joho/godotenv"
 
 	jwt "github.com/golang-jwt/jwt/v5"
 )
@@ -303,6 +304,10 @@ func withJWTAuth(handlerFunc http.HandlerFunc, s Storage) http.HandlerFunc {
 }
 
 func validateJWT(tokenString string) (*jwt.Token, error) {
+	err := godotenv.Load()
+	if err != nil {
+		return nil, err
+	}
 	secret := os.Getenv("JWT_SECRET_KEY")
 
 	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {

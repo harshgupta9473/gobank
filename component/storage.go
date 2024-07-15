@@ -3,8 +3,10 @@ package component
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"sort"
 
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
@@ -25,7 +27,12 @@ type PostgressStore struct {
 }
 
 func NewPostgressStore() (*PostgressStore, error) {
-	connStr := "user=postgres dbname=postgres password=gobank sslmode=disable"
+	err := godotenv.Load()
+	if err != nil {
+		return nil, err
+	}
+
+	connStr := os.Getenv("ConnectionString")
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return nil, err
