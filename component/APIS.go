@@ -51,54 +51,90 @@ func NewAPIServer(listenAddr string, store Storage) *APIServer {
 func (s *APIServer) Run() {
 	router := mux.NewRouter()
 	router.HandleFunc("/login", makeHTTPHandleFunc(s.handleLogin))
+	router.HandleFunc("/account/user/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleGetAccountInfo), s.store))
 	router.HandleFunc("/account", makeHTTPHandleFunc(s.handleAccount))
 	router.HandleFunc("/account/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleGetAccountByID), s.store))
-	router.HandleFunc("/account/delete/{id}", makeHTTPHandleFunc(s.handleDeleteAccount))
-	router.HandleFunc("/transfer", makeHTTPHandleFunc(s.handleTransfer))
+	router.HandleFunc("/account/delete/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleDeleteAccount), s.store))
+	router.HandleFunc("/account/transfer/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleTransfer), s.store))
+	router.HandleFunc("/account/transactions/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleTransactions), s.store))
 	log.Println("JSON API server is running on port:", s.listenAddr)
 
 	http.ListenAndServe(s.listenAddr, router)
 }
 
 func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) error {
-	if r.Method!="POST"{
-		return fmt.Errorf("method not allowed %s",r.Method)
+	if r.Method != "POST" {
+		return fmt.Errorf("method not allowed %s", r.Method)
 	}
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		return err
 	}
 
-	acc,err:=s.store.GetAccountByNumber(int(req.Number))
-	if err!=nil{
+	acc, err := s.store.GetAccountByNumber(int64(req.Number))
+	if err != nil {
 		return err
 	}
 
-	if !acc.ValidPassword(req.Password){
+	if !acc.ValidPassword(req.Password) {
 		return fmt.Errorf("not authenticated")
 	}
-	
-	token,err:=createJWT(acc)
-	if err!=nil{
+
+	token, err := createJWT(acc)
+	if err != nil {
 		return err
 	}
 
-	resp:=LoginResponse{
+	resp := LoginResponse{
 		Number: acc.Number,
-		Token: token,
+		Token:  token,
+		ID:     acc.ID,
 	}
 
 	return WriteJSON(w, http.StatusOK, resp)
 }
 
-func (s *APIServer) handleAccount(w http.ResponseWriter, r *http.Request) error {
+func (s *APIServer) handleTransactions(w http.ResponseWriter, r *http.Request) error {
 	if r.Method == "GET" {
-		return s.handleGetAccount(w, r)
+		accNo, err := DecodingJWT(r)
+		if err != nil {
+			return fmt.Errorf("permission Denied")
+		}
+		transactions, err := s.store.GetAllTransaction(accNo)
+		if err != nil {
+			return fmt.Errorf("no transactions available")
+		}
+		WriteJSON(w, http.StatusOK, transactions)
+		return nil
 	}
+	return fmt.Errorf("method not allowed")
+}
+
+func (s *APIServer) handleAccount(w http.ResponseWriter, r *http.Request) error {
+	// if r.Method == "GET" {
+	// 	return s.handleGetAccount(w, r)
+	// }
 	if r.Method == "POST" {
 		return s.handleCreateAccount(w, r)
 	}
 
+	return fmt.Errorf("method not allowed %s", r.Method)
+}
+
+func (s *APIServer) handleGetAccountInfo(w http.ResponseWriter, r *http.Request) error {
+	if r.Method == "GET" {
+		accNo, err := DecodingJWT(r)
+		if err != nil {
+			return fmt.Errorf("permission Denied")
+		}
+		acc, err := s.store.GetAccountByNumber(accNo)
+		if err != nil {
+			return fmt.Errorf("error occured")
+		}
+		WriteJSON(w, http.StatusOK, acc)
+		return nil
+
+	}
 	return fmt.Errorf("method not allowed %s", r.Method)
 }
 
@@ -131,9 +167,9 @@ func (s *APIServer) handleCreateAccount(w http.ResponseWriter, r *http.Request) 
 	if err := json.NewDecoder(r.Body).Decode(createAccountRequest); err != nil {
 		return err
 	}
-	account,err := NewAccount(createAccountRequest.FirstName, createAccountRequest.LastName,createAccountRequest.Password)
+	account, err := NewAccount(createAccountRequest.FirstName, createAccountRequest.LastName, createAccountRequest.Password, createAccountRequest.PIN)
 
-	if err!=nil{
+	if err != nil {
 		return err
 	}
 	if err := s.store.CreateAccount(account); err != nil {
@@ -152,6 +188,13 @@ func (s *APIServer) handleDeleteAccount(w http.ResponseWriter, r *http.Request) 
 		return err
 
 	}
+	acc, err := s.store.GetAccountByID(id)
+	if err != nil {
+		return fmt.Errorf("account does not exist")
+	}
+	if acc.Balance > 0 {
+		return fmt.Errorf("you still have %d money left in your account you cannot delete it", acc.Balance)
+	}
 	if err := s.store.DeleteAccount(id); err != nil {
 		return err
 	}
@@ -164,8 +207,30 @@ func (s *APIServer) handleTransfer(w http.ResponseWriter, r *http.Request) error
 		return err
 	}
 	defer r.Body.Close()
-	withJWTAuth()
-	s.store.TransferMoney(transferReq,)
+	accountno, err := DecodingJWT(r)
+	if err != nil {
+		return fmt.Errorf("invalid transaction")
+	}
+	account, err := s.store.GetAccountByNumber(accountno)
+	if err != nil {
+		return fmt.Errorf("error")
+	}
+	if !account.ValidPIN(transferReq.PIN) {
+		return fmt.Errorf("invalid transaction")
+	}
+	if account.Balance < transferReq.Amount {
+		return fmt.Errorf("low balance")
+	}
+	err = s.store.TransferMoney(transferReq, account)
+	if err != nil {
+		return fmt.Errorf("error occcured in transaction %s", err)
+	}
+	transection := NewTransaction(accountno, transferReq.Reciever, transferReq.Amount)
+	err = s.store.CreateTransactionBlock(transection)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func getID(r *http.Request) (int, error) {
@@ -175,6 +240,25 @@ func getID(r *http.Request) (int, error) {
 		return id, fmt.Errorf("invalid id is given %s", idStr)
 	}
 	return id, nil
+}
+
+// func getAccountNo(r *http.Request) (int64, error) {
+// 	accountnostring := mux.Vars(r)["account"]
+// 	accountno, err := strconv.Atoi(accountnostring)
+// 	if err != nil {
+// 		return 0, fmt.Errorf("prohibited %s", accountnostring)
+// 	}
+// 	return int64(accountno), nil
+// }
+
+func DecodingJWT(r *http.Request) (int64, error) {
+	tokenString := r.Header.Get("x-jwt-token")
+	token, err := validateJWT(tokenString)
+	if err != nil {
+		return 0, err
+	}
+	claims := token.Claims.(jwt.MapClaims)
+	return int64(claims["accountNumber"].(float64)), nil
 }
 
 func withJWTAuth(handlerFunc http.HandlerFunc, s Storage) http.HandlerFunc {
@@ -194,27 +278,26 @@ func withJWTAuth(handlerFunc http.HandlerFunc, s Storage) http.HandlerFunc {
 			permissionDenied(w)
 			return
 		}
-
-		userID, err := getID(r)
+		id, err := getID(r)
 		if err != nil {
-			permissionDenied(w)
-			return
+			WriteJSON(w, http.StatusInternalServerError, fmt.Errorf("error occured"))
 		}
-		account, err := s.GetAccountByID(userID)
-
+		account, err := s.GetAccountByID(id)
 		if err != nil {
 			permissionDenied(w)
 			return
 		}
 		claims := token.Claims.(jwt.MapClaims)
-
-		if account.Number != int64(claims["accountNumber"].(float64)) {
+		accountno := int64(claims["accountNumber"].(float64))
+		if account.Number != accountno {
 			permissionDenied(w)
 			return
 		}
-
-		fmt.Println(claims)
-
+		_, err = s.GetAccountByNumber(accountno)
+		if err != nil {
+			permissionDenied(w)
+			return
+		}
 		handlerFunc(w, r)
 	}
 }
